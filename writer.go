@@ -28,6 +28,9 @@ type DataWriter interface {
 	// Complete announces to the client that the command has been completed and
 	// no further data should be expected.
 	Complete(description string) error
+
+	// CopyIn is incomplete
+	CopyIn() error
 }
 
 // ErrDataWritten is thrown when an empty result is attempted to be send to the
@@ -77,6 +80,13 @@ func (writer *dataWriter) Row(values []any) error {
 	writer.written++
 
 	return writer.columns.Write(writer.ctx, writer.formats, writer.client, values)
+}
+
+func (writer *dataWriter) CopyIn() error {
+	if writer.closed {
+		return ErrClosedWriter
+	}
+	return nil
 }
 
 func (writer *dataWriter) Empty() error {

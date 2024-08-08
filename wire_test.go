@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jeroenrinzema/psql-wire/pkg/mock"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"github.com/lib/pq/oid"
 	"github.com/neilotoole/slogt"
 	"github.com/stretchr/testify/assert"
@@ -493,4 +493,110 @@ func TestServerNULLValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestServerCopyIn(t *testing.T) {
+	t.Parallel()
+
+	handler := func(ctx context.Context, query string) (PreparedStatements, error) {
+		handle := func(ctx context.Context, writer DataWriter, parameters []Parameter) error {
+			t.Log("serving query", query)
+			switch query {
+			case "BEGIN READ WRITE":
+				return writer.Complete("BEGIN")
+			}
+			if err := writer.CopyIn(); err != nil {
+				t.Fatal(err)
+			}
+			return writer.Complete("COPY IN")
+		}
+
+		return Prepared(NewStatement(handle)), nil
+	}
+
+	server, err := NewServer(handler, Logger(slogt.New(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	address := TListenAndServe(t, server)
+
+	t.Run("lib/pq", func(t *testing.T) {
+		connstr := fmt.Sprintf("host=%s port=%d sslmode=disable", address.IP, address.Port)
+		conn, err := sql.Open("postgres", connstr)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		txn, err := conn.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		stmt, err := txn.Prepare(pq.CopyIn("id", "name", "spotify_id"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		rows := [][]any{
+			{196, "My Posse In Effect", nil},
+			{181, "Almost KISS", nil},
+		}
+		for _, row := range rows {
+			_, err := stmt.Exec(row...)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := stmt.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := txn.Commit(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// 	t.Run("jackc/pgx", func(t *testing.T) {
+	// 		ctx := context.Background()
+	// 		connstr := fmt.Sprintf("postgres://%s:%d", address.IP, address.Port)
+	// 		conn, err := pgx.Connect(ctx, connstr)
+	// 		if err != nil {
+	// 			t.Fatal(err)
+	// 		}
+
+	// 		rows, err := conn.Query(ctx, `COPY foo FROM STDIN;
+	// 196	My Posse In Effect	\N
+	// 181	Almost KISS	\N
+	// \.
+	// `)
+	// 		if err != nil {
+	// 			t.Fatal(err)
+	// 		}
+
+	// 		for rows.Next() {
+	// 			var name string
+	// 			var member bool
+	// 			var age int
+
+	// 			err := rows.Scan(&name, &member, &age)
+	// 			if err != nil {
+	// 				t.Fatal(err)
+	// 			}
+
+	// 			t.Logf("scan result: %s, %d, %t", name, age, member)
+	// 		}
+
+	//		err = conn.Close(ctx)
+	//		if err != nil {
+	//			t.Fatal(err)
+	//		}
+	//	})
 }
