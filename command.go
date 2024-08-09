@@ -50,7 +50,7 @@ func NewErrMultipleCommandsStatements() error {
 // Responses for the given message type are written back to the client.
 // This method keeps consuming messages until the client issues a close message
 // or the connection is terminated.
-func (srv *Server) consumeCommands(ctx context.Context, conn net.Conn, reader *buffer.Reader, writer *buffer.Writer) (err error) {
+func (srv *Server) consumeCommands(ctx context.Context, conn net.Conn, reader *buffer.Reader, writer *buffer.Writer) error {
 	srv.logger.Debug("ready for query... starting to consume commands")
 
 	// TODO: Include a value to identify unique connections
@@ -58,47 +58,58 @@ func (srv *Server) consumeCommands(ctx context.Context, conn net.Conn, reader *b
 	// include a identification value inside the context that
 	// could be used to identify connections at a later stage.
 
-	err = readyForQuery(writer, types.ServerIdle)
+	err := readyForQuery(writer, types.ServerIdle)
 	if err != nil {
 		return err
 	}
 
-	for {
-		t, length, err := reader.ReadTypedMsg()
-		if err == io.EOF {
-			return nil
-		}
+	handleCommand := srv.handleCommand
 
-		// NOTE: we could recover from this scenario
-		if errors.Is(err, buffer.ErrMessageSizeExceeded) {
-			err = handleMessageSizeExceeded(reader, writer, err)
+	loop := srv.commandLoop(ctx, conn, reader, writer)
+	return loop(handleCommand)
+}
+
+type commandHandler func(context.Context, net.Conn, types.ClientMessage, *buffer.Reader, *buffer.Writer) error
+
+func (srv *Server) commandLoop(ctx context.Context, conn net.Conn, reader *buffer.Reader, writer *buffer.Writer) func(commandHandler) error {
+	return func(handleCommand commandHandler) error {
+		for {
+			t, length, err := reader.ReadTypedMsg()
+			if err == io.EOF {
+				return nil
+			}
+
+			// NOTE: we could recover from this scenario
+			if errors.Is(err, buffer.ErrMessageSizeExceeded) {
+				err = handleMessageSizeExceeded(reader, writer, err)
+				if err != nil {
+					return err
+				}
+
+				continue
+			}
+
 			if err != nil {
 				return err
 			}
 
-			continue
-		}
+			if srv.closing.Load() {
+				return nil
+			}
 
-		if err != nil {
-			return err
-		}
+			// NOTE: we increase the wait group by one in order to make sure that idle
+			// connections are not blocking a close.
+			srv.wg.Add(1)
+			srv.logger.Debug("<- incoming command", slog.Int("length", length), slog.String("type", t.String()))
+			err = handleCommand(ctx, conn, t, reader, writer)
+			srv.wg.Done()
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 
-		if srv.closing.Load() {
-			return nil
-		}
-
-		// NOTE: we increase the wait group by one in order to make sure that idle
-		// connections are not blocking a close.
-		srv.wg.Add(1)
-		srv.logger.Debug("<- incoming command", slog.Int("length", length), slog.String("type", t.String()))
-		err = srv.handleCommand(ctx, conn, t, reader, writer)
-		srv.wg.Done()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-
-		if err != nil {
-			return err
+			if err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -130,7 +141,7 @@ func handleMessageSizeExceeded(reader *buffer.Reader, writer *buffer.Writer, exc
 // message type and reader buffer containing the actual message. The type
 // indecates a action executed by the client.
 // https://www.postgresql.org/docs/14/protocol-message-formats.html
-func (srv *Server) handleCommand(ctx context.Context, conn net.Conn, t types.ClientMessage, reader *buffer.Reader, writer *buffer.Writer) (err error) {
+func (srv *Server) handleCommand(ctx context.Context, conn net.Conn, t types.ClientMessage, reader *buffer.Reader, writer *buffer.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -209,7 +220,7 @@ func (srv *Server) handleCommand(ctx context.Context, conn net.Conn, t types.Cli
 		writer.End()                            //nolint:errcheck
 		return nil
 	case types.ClientTerminate:
-		err = srv.handleConnTerminate(ctx)
+		err := srv.handleConnTerminate(ctx)
 		if err != nil {
 			return err
 		}
