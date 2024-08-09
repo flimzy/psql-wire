@@ -45,7 +45,7 @@ func NewErrMultipleCommandsStatements() error {
 	return psqlerr.WithSeverity(psqlerr.WithCode(err, codes.Syntax), psqlerr.LevelError)
 }
 
-// consumeCommands consumes incoming commands send over the Postgres wire connection.
+// consumeCommands consumes incoming commands sent over the Postgres wire connection.
 // Commands consumed from the connection are returned through a go channel.
 // Responses for the given message type are written back to the client.
 // This method keeps consuming messages until the client issues a close message
