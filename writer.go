@@ -86,6 +86,20 @@ func (writer *dataWriter) CopyIn() error {
 	if writer.closed {
 		return ErrClosedWriter
 	}
+	// if writer.reader == nil {
+	// 	return errors.New("reader is nil; use PortalCacheCopy to execute CopyIn")
+	// }
+	writer.client.Start(types.ServerCopyInResponse)
+	writer.client.AddByte(0)
+	const n = 3
+	writer.client.AddInt16(n)
+	for i := 0; i < n; i++ {
+		writer.client.AddInt16(0)
+	}
+	if err := writer.client.End(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
